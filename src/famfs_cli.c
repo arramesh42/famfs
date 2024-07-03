@@ -72,6 +72,7 @@ famfs_logplay_usage(int   argc,
 	       "    -m|--mmap   - Get the log via mmap\n"
 	       "    -c|--client - force \"client mode\" (all files read-only)\n"
 	       "    -n|--dryrun - Process the log but don't instantiate the files & directories\n"
+	       "    -S|--shadowfs - create a Yaml based shadow filesystem at specified path\n"
 	       "\n"
 	       "\n",
 	       progname);
@@ -83,11 +84,13 @@ do_famfs_cli_logplay(int argc, char *argv[])
 	int c;
 	int arg_ct = 0;
 	char *fspath;
+	char *shadowpath;
 	int dry_run = 0;
 	int use_mmap = 0;
 	int use_read = 0;
 	int client_mode = 0;
 	int verbose = 0;
+	int shadow = 0;
 
 	/* XXX can't use any of the same strings as the global args! */
 	struct option logplay_options[] = {
@@ -97,6 +100,7 @@ do_famfs_cli_logplay(int argc, char *argv[])
 		{"read",      no_argument,             0,  'r'},
 		{"client",    no_argument,             0,  'c'},
 		{"verbose",    no_argument,            0,  'v'},
+		{"shadowfs",    required_argument,      0,  'S'},
 		{0, 0, 0, 0}
 	};
 
@@ -104,7 +108,7 @@ do_famfs_cli_logplay(int argc, char *argv[])
 	 * to return -1 when it sees something that is not recognized option
 	 * (e.g. the command that will mux us off to the command handlers
 	 */
-	while ((c = getopt_long(argc, argv, "+vrcmnh?",
+	while ((c = getopt_long(argc, argv, "+vrcmnhS?",
 				logplay_options, &optind)) != EOF) {
 
 		arg_ct++;
@@ -132,6 +136,9 @@ do_famfs_cli_logplay(int argc, char *argv[])
 		case 'v':
 			verbose++;
 			break;
+		case 'S':
+			shadow++;
+			break;
 		}
 	}
 
@@ -144,6 +151,17 @@ do_famfs_cli_logplay(int argc, char *argv[])
 		/* If neither method was explicitly requested, default to mmap */
 		use_mmap = 1;
 	}
+
+	if (shadow) {
+		if (optind > (argc - 1)) {
+			fprintf(stderr, "Must specify shadowfs path "
+					"to create shadowfs\n");
+			return -1;
+		}
+
+		shadowpath = argv[optind++];
+	}
+
 	if (optind > (argc - 1)) {
 		fprintf(stderr, "Must specify mount_point "
 			"(actually any path within a famfs file system will work)\n");
@@ -152,7 +170,9 @@ do_famfs_cli_logplay(int argc, char *argv[])
 	}
 	fspath = argv[optind++];
 
-	return famfs_logplay(fspath, use_mmap, dry_run, client_mode, verbose);
+
+	return famfs_logplay(fspath, shadowpath, use_mmap, dry_run, client_mode,
+			verbose, shadow);
 }
 
 /********************************************************************/
@@ -289,7 +309,7 @@ do_famfs_cli_mount(int argc, char *argv[])
 		goto err_out;
 	}
 
-	rc = famfs_logplay(realmpt, use_mmap, 0, 0, verbose);
+	rc = famfs_logplay(realmpt, "", use_mmap, 0, 0, verbose, 0);
 
 err_out:
 	free(realdaxdev);
