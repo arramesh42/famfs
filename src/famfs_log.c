@@ -10,13 +10,13 @@
 #include <syslog.h>
 #include <stdarg.h>
 
-static unsigned int famfs_default_log_level = 5;
+static unsigned int famfs_default_log_level = FAMFS_LOG_NOTICE;
 
 static bool to_syslog = true;
 
 static void default_log_func(enum famfs_log_level level, const char *fmt, va_list ap)
 {
-    if (to_syslog && level >= famfs_default_log_level)
+    if (to_syslog && level <= famfs_default_log_level)
         vsyslog(level, fmt, ap);
 //    else
 //        vfprintf(stderr, fmt, ap);  //Is this needed ?
@@ -24,7 +24,7 @@ static void default_log_func(enum famfs_log_level level, const char *fmt, va_lis
 
 static famfs_log_func_t log_func = default_log_func;
 
-void famfs_set_log_func(fuse_log_func_t func)
+void famfs_set_log_func(famfs_log_func_t func)
 {
     if (!func)
         func = default_log_func;
@@ -32,7 +32,7 @@ void famfs_set_log_func(fuse_log_func_t func)
      log_func = func;
 }
 
-void famfs_log(enum fuse_log_level level, const char *fmt, ...)
+void famfs_log(enum famfs_log_level level, const char *fmt, ...)
 {
     va_list ap;
 
@@ -43,7 +43,7 @@ void famfs_log(enum fuse_log_level level, const char *fmt, ...)
 
 void famfs_log_set_default_log_level(unsigned int def_level)
 {
-    famfs_default_log_level = level;
+    famfs_default_log_level = def_level;
 }
 
 void famfs_log_enable_syslog(const char *ident, int option, int facility)
@@ -52,7 +52,7 @@ void famfs_log_enable_syslog(const char *ident, int option, int facility)
     openlog(ident, option, facility);
 }
 
-void famfs_log_disable_syslog()
+void famfs_log_disable_syslog(void)
 {
     to_syslog = false;
 }
