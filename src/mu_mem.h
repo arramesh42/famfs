@@ -42,6 +42,7 @@ hard_flush_processor_cache(const void *addr, size_t len)
 	if (mock_flush)
 		return;
 
+	printf("mu_mem: hard_flush_processor_cache\n");
 	__sync_synchronize();
 	__flush_processor_cache(addr, len);
 	__sync_synchronize();
@@ -57,6 +58,7 @@ flush_processor_cache(const void *addr, size_t len)
 	if (mock_flush)
 		return;
 
+	printf("mu_mem: flush_processor_cache\n");
 	/* Barier before clflush to guarantee all prior memory mutations
 	 * are flushed */
 	__sync_synchronize();
@@ -73,6 +75,7 @@ invalidate_processor_cache(const void *addr, size_t len)
 	if (mock_flush)
 		return;
 
+	printf("mu_mem: invalidate_processor_cache\n");
 	__flush_processor_cache(addr, len);
 	__sync_synchronize();
 	/* Barrier after the flush to guarantee all subsequent memory accesses
