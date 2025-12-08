@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include <assert.h>
+#include "famfs_log.h"
 
 static const uintptr_t CACHELINE_SIZE = 64;
 
@@ -116,6 +117,10 @@ static void x86_flush_range(uintptr_t start,
     // Align to cache line boundary (64 bytes on x86-64)
     uintptr_t ptr = start & ~(CACHELINE_SIZE - 1);
     uintptr_t end = start + len;
+	famfs_log(FAMFS_LOG_DEBUG,
+			"start = 0x%" PRIxPTR " ptr = 0x%" PRIxPTR " end: 0x%" PRIxPTR "\n",
+			(uintptr_t)start, (uintptr_t)ptr, (uintptr_t)end );
+
     for (; ptr < end; ptr += CACHELINE_SIZE) {
         fcc_func(ptr);
     }
@@ -124,8 +129,9 @@ static void x86_flush_range(uintptr_t start,
 void flush_processor_cache(const void *addr, size_t len)
 {
 	pthread_once(&initialized, x86_init_flush_functions);
-	printf("Arav-libfcc: flush_processor_cache 0x%" PRIxPTR " %lu \n",
-														(uintptr_t)addr, len);
+	famfs_log(FAMFS_LOG_DEBUG,
+			"flush_processor_cache 0x%" PRIxPTR " %lu \n",
+			(uintptr_t)addr, len);
     // Ensure all flush instructions have completed and data is visible
     x86_flush_range((uintptr_t)addr, len, flush_cacheline_func);
     fence_func(); // ensure all prior memory ops complete before flushing
@@ -136,8 +142,9 @@ void invalidate_processor_cache(const void *addr, size_t len)
 
 	pthread_once(&initialized, x86_init_flush_functions);
     // Invalidate: flush and invalidate each line
-	printf("Arav-libfcc: invalidate_processor_cache 0x%" PRIxPTR " %lu \n",
-														(uintptr_t)addr, len);
+	famfs_log(FAMFS_LOG_DEBUG,
+			"invalidate_processor_cache 0x%" PRIxPTR " %lu \n",
+			(uintptr_t)addr, len);
     x86_flush_range((uintptr_t)addr, len, invalidate_cacheline_func);
     fence_func();
 }
@@ -146,8 +153,9 @@ void hard_flush_processor_cache(const void *addr, size_t len)
 {
 	pthread_once(&initialized, x86_init_flush_functions);
     // Use a full memory barrier before and after to enforce strong ordering
-	printf("Arav-libfcc: hard_flush_processor_cache 0x%" PRIxPTR " %lu \n",
-														(uintptr_t)addr, len);
+	famfs_log(FAMFS_LOG_DEBUG,
+		"hard_flush_processor_cache 0x%" PRIxPTR " %lu \n",
+		(uintptr_t)addr, len);
     fence_func(); // ensure all prior memory ops complete before flushing
     x86_flush_range((uintptr_t)addr, len, invalidate_cacheline_func);
     fence_func(); // ensure all prior memory ops complete before flushing
