@@ -47,15 +47,13 @@ static inline void x86_flush_clflushopt(uintptr_t addr)
     //__asm__ volatile(".byte 0x66, 0x0f, 0xae, 0x31" : "+m" (*(volatile char *)addr));
 	//__asm__ volatile(".byte 0x66; clflush %0" : "+m" (*(volatile char *)(addr)));
 
-	//printf("arav-libfcc: CLFLUSHOPT\n");
-	__builtin_ia32_clflushopt(addr);
+	__builtin_ia32_clflushopt((const void *)addr);
 }
 
 // Use CLWB to write back a cache line without invalidating it
 static inline void x86_flush_clwb(uintptr_t addr)
 {
     // CLWB has opcode 66 0F AE /6
-	//printf("arav-libfcc: CLWB\n");
     __asm__ volatile(".byte 0x66, 0x0f, 0xae, 0x30" : "+m" (*(volatile char *)addr));
     // No invalidation: the cache line remains in cache in a clean state.
 }
