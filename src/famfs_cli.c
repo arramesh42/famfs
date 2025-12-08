@@ -29,7 +29,6 @@
 
 #include "famfs_lib.h"
 #include "random_buffer.h"
-#include "mu_mem.h"
 #include "thpool.h"
 #include "famfs_log.h"
 
