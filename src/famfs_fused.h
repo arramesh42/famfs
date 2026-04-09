@@ -7,6 +7,7 @@
 #define FAMFS_FUSED_H
 
 #include <assert.h>
+#include <linux/uuid.h>
 #include "famfs_fused_icache.h"
 
 enum {
@@ -14,6 +15,8 @@ enum {
 	CACHE_NORMAL,
 	CACHE_ALWAYS,
 };
+
+#define FAMFS_UUID_CHECK_INTERVAL 10 /* seconds */
 
 struct famfs_ctx {
 	int debug;
@@ -29,6 +32,8 @@ struct famfs_ctx {
 	int pass_yaml; /* pass the shadow yaml through */
 	int readdirplus;
 	struct famfs_icache icache;
+	uuid_le fs_uuid;              /* filesystem UUID from superblock */
+	int uuid_valid;               /* set to 1 after UUID is read at startup */
 };
 
 #endif /* FAMFS_FUSED_H */

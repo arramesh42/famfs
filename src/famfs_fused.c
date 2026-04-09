@@ -27,10 +27,12 @@
 #include <pthread.h>
 #include <sys/file.h>
 #include <sys/xattr.h>
+#include <sys/mman.h>
 #include <systemd/sd-journal.h>
 #include <signal.h>
 
 #include "famfs_lib.h"
+#include "famfs_meta.h"
 #include "famfs_fmap.h"
 #include "fuse_kernel.h"
 #include "fuse_i.h"
@@ -1247,6 +1249,162 @@ fused_syslog(
  */
 struct famfs_ctx famfs_context;
 
+/*
+ * UUID check thread state
+ */
+static pthread_t uuid_check_thread;
+static volatile int uuid_check_shutdown = 0;
+static volatile int uuid_check_running = 0;
+
+/**
+ * famfs_read_superblock_uuid() - Read the filesystem UUID from dax device
+ *
+ * @daxdev: path to the dax device (e.g., /dev/dax0.0)
+ * @uuid_out: pointer to store the UUID
+ *
+ * Returns 0 on success, negative errno on failure
+ */
+static int
+famfs_read_superblock_uuid(const char *daxdev, uuid_le *uuid_out)
+{
+	struct famfs_superblock *sb;
+	void *addr;
+	int fd;
+	int rc = 0;
+
+	if (!daxdev || !uuid_out)
+		return -EINVAL;
+
+	fd = open(daxdev, O_RDONLY);
+	if (fd < 0) {
+		famfs_log(FAMFS_LOG_ERR,
+			  "%s: failed to open daxdev %s (errno=%d)\n",
+			  __func__, daxdev, errno);
+		return -errno;
+	}
+
+	addr = mmap(NULL, FAMFS_SUPERBLOCK_SIZE, PROT_READ, MAP_SHARED, fd, 0);
+	if (addr == MAP_FAILED) {
+		famfs_log(FAMFS_LOG_ERR,
+			  "%s: failed to mmap superblock from %s (errno=%d)\n",
+			  __func__, daxdev, errno);
+		close(fd);
+		return -errno;
+	}
+
+	sb = (struct famfs_superblock *)addr;
+
+	/* Validate superblock magic */
+	if (sb->ts_magic != FAMFS_SUPER_MAGIC) {
+		famfs_log(FAMFS_LOG_ERR,
+			  "%s: invalid superblock magic on %s\n",
+			  __func__, daxdev);
+		rc = -EINVAL;
+		goto out;
+	}
+
+	/* Copy the filesystem UUID */
+	memcpy(uuid_out, &sb->ts_uuid, sizeof(*uuid_out));
+
+out:
+	munmap(addr, FAMFS_SUPERBLOCK_SIZE);
+	close(fd);
+	return rc;
+}
+
+/**
+ * uuid_check_thread_fn() - Periodic UUID check thread
+ *
+ * Checks the filesystem UUID every FAMFS_UUID_CHECK_INTERVAL seconds.
+ * On mismatch, logs a fatal error to syslog/dmesg and exits the daemon.
+ */
+static void *
+uuid_check_thread_fn(void *arg)
+{
+	struct famfs_ctx *ctx = (struct famfs_ctx *)arg;
+	uuid_le current_uuid;
+	int rc;
+
+	while (!uuid_check_shutdown) {
+		sleep(FAMFS_UUID_CHECK_INTERVAL);
+
+		if (uuid_check_shutdown)
+			break;
+
+		if (!ctx->daxdev || !ctx->uuid_valid)
+			continue;
+
+		rc = famfs_read_superblock_uuid(ctx->daxdev, &current_uuid);
+		if (rc) {
+			famfs_log(FAMFS_LOG_ERR,
+				  "UUID check: failed to read superblock (rc=%d)\n",
+				  rc);
+			continue;
+		}
+
+		if (memcmp(&current_uuid, &ctx->fs_uuid, sizeof(uuid_le)) != 0) {
+			/*
+			 * UUID mismatch - filesystem has changed!
+			 * Log to EMERG level (goes to dmesg/console) and exit
+			 */
+			famfs_log(FAMFS_LOG_EMERG,
+				  "FATAL: Filesystem UUID mismatch detected on %s! "
+				  "The underlying filesystem has changed. "
+				  "Shutting down famfs_fused.\n",
+				  ctx->daxdev);
+			fprintf(stderr,
+				"FATAL: Filesystem UUID mismatch on %s - "
+				"shutting down\n", ctx->daxdev);
+			exit(1);
+		}
+	}
+
+	return NULL;
+}
+
+/**
+ * famfs_uuid_check_start() - Start the UUID check thread
+ */
+static void
+famfs_uuid_check_start(struct famfs_ctx *ctx)
+{
+	int rc;
+
+	if (!ctx->daxdev || !ctx->uuid_valid) {
+		famfs_log(FAMFS_LOG_NOTICE,
+			  "UUID check: disabled (no daxdev or UUID not valid)\n");
+		return;
+	}
+
+	uuid_check_shutdown = 0;
+	rc = pthread_create(&uuid_check_thread, NULL, uuid_check_thread_fn, ctx);
+	if (rc) {
+		famfs_log(FAMFS_LOG_ERR,
+			  "UUID check: failed to create thread (rc=%d)\n", rc);
+		return;
+	}
+
+	uuid_check_running = 1;
+	famfs_log(FAMFS_LOG_NOTICE,
+		  "UUID check: started (interval=%d seconds)\n",
+		  FAMFS_UUID_CHECK_INTERVAL);
+}
+
+/**
+ * famfs_uuid_check_stop() - Stop the UUID check thread
+ */
+static void
+famfs_uuid_check_stop(void)
+{
+	if (!uuid_check_running)
+		return;
+
+	uuid_check_shutdown = 1;
+	pthread_join(uuid_check_thread, NULL);
+	uuid_check_running = 0;
+	famfs_log(FAMFS_LOG_NOTICE, "UUID check: stopped\n");
+}
+
 int main(int argc, char *argv[])
 {
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
@@ -1319,11 +1477,30 @@ int main(int argc, char *argv[])
 	famfs_dump_opts(&famfs_context);
 
 	if (lo->daxdev) {
+		int uuid_rc;
+
 		/* Store the primary daxdev in slot 0 of the daxdev_table... */
 		lo->daxdev_table =
 			calloc(MAX_DAXDEVS, sizeof(*lo->daxdev_table));
 		strncpy(lo->daxdev_table[0].dd_daxdev,
 			lo->daxdev, FAMFS_DEVNAME_LEN - 1);
+
+		/* Read and store the filesystem UUID for periodic validation.
+		 * If this fails (e.g., no valid superblock during mkfs),
+		 * we continue without UUID validation rather than failing.
+		 */
+		uuid_rc = famfs_read_superblock_uuid(lo->daxdev, &lo->fs_uuid);
+		if (uuid_rc) {
+			famfs_log(FAMFS_LOG_NOTICE,
+				  "%s: could not read filesystem UUID from %s (rc=%d), "
+				  "UUID validation disabled\n",
+				  PROGNAME, lo->daxdev, uuid_rc);
+			lo->uuid_valid = 0;
+		} else {
+			lo->uuid_valid = 1;
+			famfs_log(FAMFS_LOG_NOTICE,
+				  "Filesystem UUID read from %s\n", lo->daxdev);
+		}
 	}
 
 	if (!lo->source) {
@@ -1394,6 +1571,9 @@ int main(int argc, char *argv[])
 
 	famfs_diag_server_start(shadow_root);
 
+	/* Start periodic UUID validation */
+	famfs_uuid_check_start(lo);
+
 	/* Block until ctrl+c or fusermount -u */
 	if (opts.singlethread)
 		ret = fuse_session_loop(se);
@@ -1408,6 +1588,7 @@ int main(int argc, char *argv[])
 
 	famfs_log(FAMFS_LOG_NOTICE, "%s: umount %s\n", PROGNAME,
 		  opts.mountpoint);
+	famfs_uuid_check_stop();
 	famfs_diag_server_stop();
 
 	fuse_session_unmount(se);
