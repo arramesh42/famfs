@@ -1260,6 +1260,68 @@ __famfs_mkmeta_superblock(
 }
 
 /**
+ * famfs_create_uuid_check_file()
+ *
+ * Create a UUID check file in the shadow filesystem for validation by famfsd.
+ * This file stores the filesystem UUID so the daemon can detect if the
+ * underlying storage has been reformatted by another host.
+ *
+ * @shadow_root - Path to the shadow root (e.g., /tmp/famfs_shadow_XXX/root)
+ * @uuid        - Pointer to the filesystem UUID from the superblock
+ * @verbose     - Verbose output flag
+ *
+ * Returns 0 on success, negative on error
+ */
+int
+famfs_create_uuid_check_file(
+	const char *shadow_root,
+	const uuid_le *uuid,
+	int verbose)
+{
+	char uuid_check_path[PATH_MAX] = {0};
+	char uuid_str[37]; /* UUID string is 36 chars + null */
+	uuid_t local_uuid;
+	int fd;
+	ssize_t written;
+
+	/* Build path to .meta/.uuid_check */
+	snprintf(uuid_check_path, PATH_MAX - 1, "%s/.meta/.uuid_check", shadow_root);
+
+	/* Convert uuid_le to string */
+	memcpy(&local_uuid, uuid, sizeof(local_uuid));
+	uuid_unparse(local_uuid, uuid_str);
+
+	/* Create/overwrite the UUID check file */
+	fd = open(uuid_check_path, O_RDWR | O_CREAT | O_TRUNC, 0444);
+	if (fd < 0) {
+		fprintf(stderr, "%s: failed to create uuid check file %s: %s\n",
+			__func__, uuid_check_path, strerror(errno));
+		return -errno;
+	}
+
+	/* Write the UUID string (36 chars + newline) */
+	written = write(fd, uuid_str, 36);
+	if (written != 36) {
+		fprintf(stderr, "%s: failed to write uuid to %s: %s\n",
+			__func__, uuid_check_path, strerror(errno));
+		close(fd);
+		unlink(uuid_check_path);
+		return -errno;
+	}
+
+	/* Add newline for readability */
+	write(fd, "\n", 1);
+
+	close(fd);
+
+	if (verbose)
+		printf("%s: UUID check file created: %s (uuid=%s)\n",
+		       __func__, uuid_check_path, uuid_str);
+
+	return 0;
+}
+
+/**
  * __famfs_mkmeta_log()
  *
  * Create a famfs metadata log meta file

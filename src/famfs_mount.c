@@ -600,6 +600,72 @@ famfs_start_fuse_daemon(
 	return 0;
 }
 
+/**
+ * famfs_start_famfsd() - Start the famfsd UUID monitoring daemon
+ *
+ * @mpt:     Mount point to monitor
+ * @debug:   If set, run in foreground with verbose output
+ * @verbose: Verbose output
+ *
+ * Returns 0 on success (parent), -1 on fork failure
+ * Child process does not return (execv)
+ */
+static int
+famfs_start_famfsd(
+	const char *mpt,
+	int debug,
+	int verbose)
+{
+	char target_path[PATH_MAX] = { 0 };
+	char exe_path[PATH_MAX] = { 0 };
+	char *argv[8] = { 0 };
+	int argc = 0;
+	ssize_t len;
+	char *dir;
+	pid_t pid;
+
+	pid = fork();
+
+	if (pid < 0) {
+		fprintf(stderr, "%s: failed to fork\n", __func__);
+		return -1;
+	}
+
+	if (pid > 0) {
+		/* Parent process */
+		famfs_log(FAMFS_LOG_DEBUG, "%s: famfsd pid=%d\n", __func__, pid);
+		if (verbose)
+			printf("%s: famfsd pid=%d\n", __func__, pid);
+		return 0;
+	}
+
+	/* Child process - exec famfsd */
+	len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+	if (len < 0) {
+		fprintf(stderr, "%s: readlink /proc/self/exe failed\n",
+			__func__);
+		_exit(1);
+	}
+	exe_path[len] = '\0';
+	dir = dirname(exe_path);
+	snprintf(target_path, sizeof(target_path) - 1, "%s/%s", dir, "famfsd");
+
+	argv[argc++] = "famfsd";
+	if (debug) {
+		argv[argc++] = "-f"; /* foreground */
+		argv[argc++] = "-v"; /* verbose */
+	}
+	argv[argc++] = (char *)mpt;
+	argv[argc++] = NULL;
+
+	execv(target_path, argv);
+
+	/* execv failed */
+	fprintf(stderr, "%s: execv %s failed: %s\n",
+		__func__, target_path, strerror(errno));
+	_exit(1);
+}
+
 static char *
 gen_shadow_dir(void)
 {
@@ -902,6 +968,17 @@ famfs_mount_fuse(
 		assert(log_size == log_size_out);
 	}
 
+	/* Create UUID check file for famfsd validation (non-dummy mounts only) */
+	if (!dummy && (role == FAMFS_MASTER || role == FAMFS_CLIENT)) {
+		rc = famfs_create_uuid_check_file(shadow_root, &sb->ts_uuid,
+						  verbose);
+		if (rc) {
+			fprintf(stderr, "%s: failed to create uuid check file\n",
+				__func__);
+			/* Non-fatal: continue with mount */
+		}
+	}
+
 	/* Unmap the superblock, though logplay will re-map it */
 	if (sb) {
 		int rc2 = munmap(sb, FAMFS_SUPERBLOCK_SIZE);
@@ -924,6 +1001,15 @@ famfs_mount_fuse(
 			fprintf(stderr, "%s: failed to play the log\n",
 				__func__);
 			goto out;
+		}
+
+		/* Start the famfsd UUID monitoring daemon */
+		rc = famfs_start_famfsd(realmpt, debug, verbose);
+		if (rc < 0) {
+			fprintf(stderr, "%s: warning: failed to start famfsd\n",
+				__func__);
+			/* Non-fatal: mount succeeded, just no UUID monitoring */
+			rc = 0;
 		}
 	}
 out:

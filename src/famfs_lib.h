@@ -95,6 +95,8 @@ int famfs_mkmeta_standalone(const char *devname, int verbose);
 int __famfs_mkmeta_superblock(const char *mpt, int shadow, int verbose);
 int __famfs_mkmeta_log(const char *mpt, u64 log_offset, u64 log_size,
 		   enum famfs_system_role role, int shadow, int verbose);
+int famfs_create_uuid_check_file(const char *shadow_root,
+				 const uuid_le *uuid, int verbose);
 
 int famfs_logplay(
 	const char *mpt, int use_mmap, int dry_run, int client_mode,
