@@ -71,14 +71,16 @@ static int setup_signal_handlers(void)
 }
 
 /**
- * read_uuid_from_superblock() - Read the filesystem UUID from the superblock
+ * read_superblock_uuids() - Read UUIDs from the superblock
  *
- * @mpt:      Mount point path
- * @uuid_out: Output buffer for the UUID
+ * @mpt:             Mount point path
+ * @fs_uuid_out:     Output buffer for the filesystem UUID (optional, can be NULL)
+ * @system_uuid_out: Output buffer for the system UUID (optional, can be NULL)
  *
  * Returns 0 on success, negative on error
  */
-static int read_uuid_from_superblock(const char *mpt, uuid_le *uuid_out)
+static int read_superblock_uuids(const char *mpt, uuid_le *fs_uuid_out,
+				 uuid_le *system_uuid_out)
 {
 	char sb_path[PATH_MAX];
 	struct famfs_superblock *sb;
@@ -109,11 +111,46 @@ static int read_uuid_from_superblock(const char *mpt, uuid_le *uuid_out)
 		return -EINVAL;
 	}
 
-	memcpy(uuid_out, &sb->ts_uuid, sizeof(uuid_le));
+	if (fs_uuid_out)
+		memcpy(fs_uuid_out, &sb->ts_uuid, sizeof(uuid_le));
+
+	if (system_uuid_out)
+		memcpy(system_uuid_out, &sb->ts_system_uuid, sizeof(uuid_le));
 
 	rc = munmap(sb, sb_size);
 	if (rc)
 		syslog(LOG_WARNING, "famfsd: failed to munmap superblock");
+
+	return 0;
+}
+
+/**
+ * check_is_owner() - Check if this system is the filesystem owner
+ *
+ * @mpt: Mount point path
+ *
+ * Returns 1 if owner, 0 if client, negative on error
+ */
+static int check_is_owner(const char *mpt)
+{
+	uuid_le sb_system_uuid, my_system_uuid;
+	int rc;
+
+	/* Get the system UUID from the superblock (owner's UUID) */
+	rc = read_superblock_uuids(mpt, NULL, &sb_system_uuid);
+	if (rc < 0)
+		return rc;
+
+	/* Get this system's UUID */
+	rc = famfs_get_system_uuid(&my_system_uuid);
+	if (rc < 0) {
+		syslog(LOG_ERR, "famfsd: failed to get system UUID");
+		return rc;
+	}
+
+	/* Compare: if they match, we are the owner */
+	if (memcmp(&sb_system_uuid, &my_system_uuid, sizeof(uuid_le)) == 0)
+		return 1;
 
 	return 0;
 }
@@ -208,7 +245,7 @@ static int famfsd_main_loop(const char *mpt, const char *shadow_path)
 			break;
 
 		/* Read current UUID from superblock */
-		rc = read_uuid_from_superblock(mpt, &current_uuid);
+		rc = read_superblock_uuids(mpt, &current_uuid, NULL);
 		if (rc < 0) {
 			/* May be a transient error, log and continue */
 			syslog(LOG_WARNING,
@@ -322,6 +359,23 @@ int main(int argc, char *argv[])
 
 	if (verbose)
 		printf("famfsd: shadow path is %s\n", shadow_path);
+
+	/* Check if this system is the filesystem owner */
+	rc = check_is_owner(mpt);
+	if (rc < 0) {
+		fprintf(stderr, "Error: failed to determine owner status\n");
+		return 2;
+	}
+	if (rc == 0) {
+		/* This is a client, not the owner - UUID monitoring not needed */
+		if (verbose)
+			printf("famfsd: this system is a client, not the owner; "
+			       "UUID monitoring not required\n");
+		return 0;
+	}
+
+	if (verbose)
+		printf("famfsd: this system is the filesystem owner\n");
 
 	/* Setup signal handlers */
 	if (setup_signal_handlers() < 0) {
