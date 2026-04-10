@@ -970,8 +970,7 @@ famfs_mount_fuse(
 
 	/* Create UUID check file for famfsd validation (non-dummy mounts only) */
 	if (!dummy && (role == FAMFS_MASTER || role == FAMFS_CLIENT)) {
-		rc = famfs_create_uuid_check_file(shadow_root, &sb->ts_uuid,
-						  verbose);
+		rc = famfs_create_uuid_check_file(shadow_root, sb, verbose);
 		if (rc) {
 			fprintf(stderr, "%s: failed to create uuid check file\n",
 				__func__);

@@ -1263,11 +1263,11 @@ __famfs_mkmeta_superblock(
  * famfs_create_uuid_check_file()
  *
  * Create a UUID check file in the shadow filesystem for validation by famfsd.
- * This file stores the filesystem UUID so the daemon can detect if the
- * underlying storage has been reformatted by another host.
+ * This file stores a copy of the superblock in human-readable format so the
+ * daemon can detect if the underlying storage has been reformatted by another host.
  *
  * @shadow_root - Path to the shadow root (e.g., /tmp/famfs_shadow_XXX/root)
- * @uuid        - Pointer to the filesystem UUID from the superblock
+ * @sb          - Pointer to the filesystem superblock
  * @verbose     - Verbose output flag
  *
  * Returns 0 on success, negative on error
@@ -1275,44 +1275,60 @@ __famfs_mkmeta_superblock(
 int
 famfs_create_uuid_check_file(
 	const char *shadow_root,
-	const uuid_le *uuid,
+	const struct famfs_superblock *sb,
 	int verbose)
 {
 	char uuid_check_path[PATH_MAX] = {0};
 	char uuid_str[37]; /* UUID string is 36 chars + null */
+	char dev_uuid_str[37];
+	char system_uuid_str[37];
+	char daxdev_uuid_str[37];
 	uuid_t local_uuid;
-	int fd;
-	ssize_t written;
+	FILE *fp;
 
 	/* Build path to .meta/.uuid_check */
 	snprintf(uuid_check_path, PATH_MAX - 1, "%s/.meta/.uuid_check", shadow_root);
 
-	/* Convert uuid_le to string */
-	memcpy(&local_uuid, uuid, sizeof(local_uuid));
-	uuid_unparse(local_uuid, uuid_str);
-
 	/* Create/overwrite the UUID check file */
-	fd = open(uuid_check_path, O_RDWR | O_CREAT | O_TRUNC, 0444);
-	if (fd < 0) {
+	fp = fopen(uuid_check_path, "w");
+	if (!fp) {
 		fprintf(stderr, "%s: failed to create uuid check file %s: %s\n",
 			__func__, uuid_check_path, strerror(errno));
 		return -errno;
 	}
 
-	/* Write the UUID string (36 chars + newline) */
-	written = write(fd, uuid_str, 36);
-	if (written != 36) {
-		fprintf(stderr, "%s: failed to write uuid to %s: %s\n",
-			__func__, uuid_check_path, strerror(errno));
-		close(fd);
-		unlink(uuid_check_path);
-		return -errno;
-	}
+	/* Convert UUIDs to strings */
+	memcpy(&local_uuid, &sb->ts_uuid, sizeof(local_uuid));
+	uuid_unparse(local_uuid, uuid_str);
 
-	/* Add newline for readability */
-	write(fd, "\n", 1);
+	memcpy(&local_uuid, &sb->ts_dev_uuid, sizeof(local_uuid));
+	uuid_unparse(local_uuid, dev_uuid_str);
 
-	close(fd);
+	memcpy(&local_uuid, &sb->ts_system_uuid, sizeof(local_uuid));
+	uuid_unparse(local_uuid, system_uuid_str);
+
+	memcpy(&local_uuid, &sb->ts_daxdev.dd_uuid, sizeof(local_uuid));
+	uuid_unparse(local_uuid, daxdev_uuid_str);
+
+	/* Write superblock fields in human-readable format */
+	fprintf(fp, "# famfs superblock snapshot\n");
+	fprintf(fp, "magic=0x%llx\n", (unsigned long long)sb->ts_magic);
+	fprintf(fp, "version=%llu\n", (unsigned long long)sb->ts_version);
+	fprintf(fp, "log_offset=%llu\n", (unsigned long long)sb->ts_log_offset);
+	fprintf(fp, "log_len=%llu\n", (unsigned long long)sb->ts_log_len);
+	fprintf(fp, "alloc_unit=%llu\n", (unsigned long long)sb->ts_alloc_unit);
+	fprintf(fp, "omf_ver_major=%u\n", sb->ts_omf_ver_major);
+	fprintf(fp, "omf_ver_minor=%u\n", sb->ts_omf_ver_minor);
+	fprintf(fp, "uuid=%s\n", uuid_str);
+	fprintf(fp, "dev_uuid=%s\n", dev_uuid_str);
+	fprintf(fp, "system_uuid=%s\n", system_uuid_str);
+	fprintf(fp, "crc=0x%llx\n", (unsigned long long)sb->ts_crc);
+	fprintf(fp, "sb_flags=0x%x\n", sb->ts_sb_flags);
+	fprintf(fp, "daxdev_size=%zu\n", sb->ts_daxdev.dd_size);
+	fprintf(fp, "daxdev_uuid=%s\n", daxdev_uuid_str);
+	fprintf(fp, "daxdev_name=%s\n", sb->ts_daxdev.dd_daxdev);
+
+	fclose(fp);
 
 	if (verbose)
 		printf("%s: UUID check file created: %s (uuid=%s)\n",

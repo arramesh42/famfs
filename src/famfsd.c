@@ -129,7 +129,12 @@ static int read_superblock_uuids(const char *mpt, uuid_le *fs_uuid_out,
  *
  * @mpt: Mount point path
  *
- * Returns 1 if owner, 0 if client, negative on error
+ * Returns 1 if owner, 0 if client (including when superblock can't be read)
+ *
+ * Note: If we cannot read or validate the superblock, we assume we are
+ * not the owner. This handles the case where the filesystem has been
+ * reformatted by another host - clients should exit gracefully rather
+ * than attempt UUID monitoring on a filesystem they don't own.
  */
 static int check_is_owner(const char *mpt)
 {
@@ -138,14 +143,24 @@ static int check_is_owner(const char *mpt)
 
 	/* Get the system UUID from the superblock (owner's UUID) */
 	rc = read_superblock_uuids(mpt, NULL, &sb_system_uuid);
-	if (rc < 0)
-		return rc;
+	if (rc < 0) {
+		/*
+		 * Cannot read superblock - this can happen if:
+		 * 1. The filesystem was reformatted by another host
+		 * 2. The superblock is invalid or corrupted
+		 * In either case, we are not the owner of this filesystem.
+		 */
+		return 0;
+	}
 
 	/* Get this system's UUID */
 	rc = famfs_get_system_uuid(&my_system_uuid);
 	if (rc < 0) {
-		syslog(LOG_ERR, "famfsd: failed to get system UUID");
-		return rc;
+		/*
+		 * Cannot determine our own system UUID - we cannot
+		 * confirm ownership, so assume we are a client.
+		 */
+		return 0;
 	}
 
 	/* Compare: if they match, we are the owner */
@@ -360,13 +375,11 @@ int main(int argc, char *argv[])
 	if (verbose)
 		printf("famfsd: shadow path is %s\n", shadow_path);
 
-	/* Check if this system is the filesystem owner */
-	rc = check_is_owner(mpt);
-	if (rc < 0) {
-		fprintf(stderr, "Error: failed to determine owner status\n");
-		return 2;
-	}
-	if (rc == 0) {
+	/* Check if this system is the filesystem owner.
+	 * Clients (including nodes where we can't read the superblock due to
+	 * filesystem reformatting by another host) exit gracefully here.
+	 */
+	if (!check_is_owner(mpt)) {
 		/* This is a client, not the owner - UUID monitoring not needed */
 		if (verbose)
 			printf("famfsd: this system is a client, not the owner; "
