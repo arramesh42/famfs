@@ -968,11 +968,11 @@ famfs_mount_fuse(
 		assert(log_size == log_size_out);
 	}
 
-	/* Create UUID check file for famfsd validation (non-dummy mounts only) */
+	/* Create superblock check file for famfsd validation (non-dummy mounts only) */
 	if (!dummy && (role == FAMFS_MASTER || role == FAMFS_CLIENT)) {
-		rc = famfs_create_uuid_check_file(shadow_root, sb, verbose);
+		rc = famfs_create_sb_check_file(shadow_root, sb, verbose);
 		if (rc) {
-			fprintf(stderr, "%s: failed to create uuid check file\n",
+			fprintf(stderr, "%s: failed to create superblock check file\n",
 				__func__);
 			/* Non-fatal: continue with mount */
 		}

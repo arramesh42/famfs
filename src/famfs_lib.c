@@ -1260,9 +1260,9 @@ __famfs_mkmeta_superblock(
 }
 
 /**
- * famfs_create_uuid_check_file()
+ * famfs_create_sb_check_file()
  *
- * Create a UUID check file in the shadow filesystem for validation by famfsd.
+ * Create a superblock check file in the shadow filesystem for validation by famfsd.
  * This file stores a copy of the superblock in human-readable format so the
  * daemon can detect if the underlying storage has been reformatted by another host.
  *
@@ -1273,12 +1273,12 @@ __famfs_mkmeta_superblock(
  * Returns 0 on success, negative on error
  */
 int
-famfs_create_uuid_check_file(
+famfs_create_sb_check_file(
 	const char *shadow_root,
 	const struct famfs_superblock *sb,
 	int verbose)
 {
-	char uuid_check_path[PATH_MAX] = {0};
+	char sb_check_path[PATH_MAX] = {0};
 	char uuid_str[37]; /* UUID string is 36 chars + null */
 	char dev_uuid_str[37];
 	char system_uuid_str[37];
@@ -1286,14 +1286,14 @@ famfs_create_uuid_check_file(
 	uuid_t local_uuid;
 	FILE *fp;
 
-	/* Build path to .meta/.uuid_check */
-	snprintf(uuid_check_path, PATH_MAX - 1, "%s/.meta/.uuid_check", shadow_root);
+	/* Build path to .meta/.superblock_check */
+	snprintf(sb_check_path, PATH_MAX - 1, "%s/.meta/.superblock_check", shadow_root);
 
-	/* Create/overwrite the UUID check file */
-	fp = fopen(uuid_check_path, "w");
+	/* Create/overwrite the superblock check file */
+	fp = fopen(sb_check_path, "w");
 	if (!fp) {
-		fprintf(stderr, "%s: failed to create uuid check file %s: %s\n",
-			__func__, uuid_check_path, strerror(errno));
+		fprintf(stderr, "%s: failed to create superblock check file %s: %s\n",
+			__func__, sb_check_path, strerror(errno));
 		return -errno;
 	}
 
@@ -1331,8 +1331,8 @@ famfs_create_uuid_check_file(
 	fclose(fp);
 
 	if (verbose)
-		printf("%s: UUID check file created: %s (uuid=%s)\n",
-		       __func__, uuid_check_path, uuid_str);
+		printf("%s: superblock check file created: %s (uuid=%s)\n",
+		       __func__, sb_check_path, uuid_str);
 
 	return 0;
 }

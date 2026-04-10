@@ -32,8 +32,8 @@
 
 #define FAMFSD_VERSION "1.0.0"
 #define POLL_INTERVAL_SEC 5
-#define UUID_CHECK_RELPATH ".meta/.uuid_check"
 #define SB_FILE_RELPATH ".meta/.superblock"
+#define SB_CHECK_RELPATH ".meta/.superblock_check"
 
 /* Global for signal handling */
 static volatile sig_atomic_t g_running = 1;
@@ -171,42 +171,52 @@ static int check_is_owner(const char *mpt)
 }
 
 /**
- * read_uuid_from_check_file() - Read the expected UUID from the check file
+ * read_uuid_from_sb_check_file() - Read the expected UUID from the superblock check file
  *
  * @shadow_path: Path to the shadow root directory
  * @uuid_out:    Output buffer for the UUID
  *
  * Returns 0 on success, negative on error
  */
-static int read_uuid_from_check_file(const char *shadow_path, uuid_le *uuid_out)
+static int read_uuid_from_sb_check_file(const char *shadow_path, uuid_le *uuid_out)
 {
-	char check_path[PATH_MAX];
+	char sb_check_path[PATH_MAX];
 	FILE *fp;
+	char line[256];
 	char uuid_str[48];
 	uuid_t local_uuid;
+	int found = 0;
 
-	snprintf(check_path, PATH_MAX, "%s/%s", shadow_path, UUID_CHECK_RELPATH);
+	snprintf(sb_check_path, PATH_MAX, "%s/root/%s", shadow_path, SB_CHECK_RELPATH);
 
-	fp = fopen(check_path, "r");
+	fp = fopen(sb_check_path, "r");
 	if (!fp) {
-		syslog(LOG_ERR, "famfsd: cannot open uuid check file: %s (%s)",
-		       check_path, strerror(errno));
+		syslog(LOG_ERR, "famfsd: cannot open superblock check file: %s (%s)",
+		       sb_check_path, strerror(errno));
 		return -errno;
 	}
 
-	if (fgets(uuid_str, sizeof(uuid_str), fp) == NULL) {
-		syslog(LOG_ERR, "famfsd: cannot read uuid from check file");
-		fclose(fp);
-		return -EIO;
+	/* Parse the file looking for the uuid= line */
+	while (fgets(line, sizeof(line), fp) != NULL) {
+		if (strncmp(line, "uuid=", 5) == 0) {
+			strncpy(uuid_str, line + 5, sizeof(uuid_str) - 1);
+			uuid_str[sizeof(uuid_str) - 1] = '\0';
+			/* Remove trailing newline if present */
+			uuid_str[strcspn(uuid_str, "\n")] = '\0';
+			found = 1;
+			break;
+		}
 	}
 	fclose(fp);
 
-	/* Remove trailing newline if present */
-	uuid_str[strcspn(uuid_str, "\n")] = '\0';
+	if (!found) {
+		syslog(LOG_ERR, "famfsd: uuid not found in superblock check file");
+		return -EINVAL;
+	}
 
 	/* Parse UUID string back to uuid_le */
 	if (uuid_parse(uuid_str, local_uuid) < 0) {
-		syslog(LOG_ERR, "famfsd: invalid UUID format in check file: %s",
+		syslog(LOG_ERR, "famfsd: invalid UUID format in superblock check file: %s",
 		       uuid_str);
 		return -EINVAL;
 	}
@@ -243,8 +253,8 @@ static int famfsd_main_loop(const char *mpt, const char *shadow_path)
 	char exp_str[37], cur_str[37];
 	int rc;
 
-	/* Read the expected UUID from check file */
-	rc = read_uuid_from_check_file(shadow_path, &expected_uuid);
+	/* Read the expected UUID from superblock check file */
+	rc = read_uuid_from_sb_check_file(shadow_path, &expected_uuid);
 	if (rc < 0) {
 		syslog(LOG_ERR, "famfsd: failed to read expected UUID");
 		return rc;
