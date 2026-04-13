@@ -501,6 +501,69 @@ int shadow_path_valid(const char *path)
 
 #define NARGV 64
 
+#define SUPERBLOCK_CHECK_FILE ".meta/.superblock_check"
+
+/**
+ * famfs_create_superblock_check() - Save superblock UUID for consistency checking
+ *
+ * @shadow_root: path to shadow filesystem root (e.g., /tmp/famfs_shadow_.../root)
+ * @sb: pointer to the mapped superblock
+ *
+ * Creates a file in the shadow filesystem containing the superblock UUID.
+ * This file is used by famfsd daemon to detect if another host has overwritten
+ * the filesystem superblock.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+static int
+famfs_create_superblock_check(
+	const char *shadow_root,
+	const struct famfs_superblock *sb)
+{
+	char check_path[PATH_MAX];
+	int fd;
+	ssize_t written;
+
+	if (!shadow_root || !sb) {
+		famfs_log(FAMFS_LOG_ERR, "%s: invalid arguments\n", __func__);
+		return -EINVAL;
+	}
+
+	snprintf(check_path, sizeof(check_path), "%s/%s",
+		 shadow_root, SUPERBLOCK_CHECK_FILE);
+
+	famfs_log(FAMFS_LOG_DEBUG, "%s: creating superblock check file at %s\n",
+		  __func__, check_path);
+
+	fd = open(check_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0) {
+		famfs_log(FAMFS_LOG_ERR, "%s: failed to create %s (errno=%d)\n",
+			  __func__, check_path, errno);
+		return -errno;
+	}
+
+	/* Write the entire superblock structure for comprehensive checking */
+	written = write(fd, sb, sizeof(struct famfs_superblock));
+	if (written != sizeof(struct famfs_superblock)) {
+		famfs_log(FAMFS_LOG_ERR, "%s: failed to write superblock check "
+			  "(written=%zd, expected=%zu, errno=%d)\n",
+			  __func__, written, sizeof(struct famfs_superblock), errno);
+		close(fd);
+		return -EIO;
+	}
+
+	/* Ensure data is flushed to disk */
+	fsync(fd);
+	close(fd);
+
+	famfs_log(FAMFS_LOG_DEBUG, "%s: superblock check file created successfully\n",
+		  __func__);
+	famfs_log(FAMFS_LOG_DEBUG, "%s: fs_uuid saved for consistency checking\n",
+		  __func__);
+
+	return 0;
+}
+
 static int
 famfs_start_fuse_daemon(
 	const char *mpt,
@@ -598,6 +661,92 @@ famfs_start_fuse_daemon(
 	execv(target_path, argv);
 
 	return 0;
+}
+
+/**
+ * famfs_start_famfsd() - Start the famfsd superblock monitoring daemon
+ *
+ * @mpt: mount point to monitor
+ * @debug: if true, run in foreground with verbose output
+ * @verbose: verbose output
+ *
+ * Forks and execs the famfsd daemon to monitor the superblock for consistency.
+ * The daemon will detect if another host overwrites the filesystem and
+ * initiate an unmount if a mismatch is detected.
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+static int
+famfs_start_famfsd(
+	const char *mpt,
+	int debug,
+	int verbose)
+{
+	char target_path[PATH_MAX] = { 0 };
+	char exe_path[PATH_MAX] = { 0 };
+	char *argv[NARGV] = { 0 };
+	int argc = 0;
+	ssize_t len;
+	char *dir;
+	pid_t pid;
+
+	famfs_log(FAMFS_LOG_DEBUG, "%s: starting famfsd for mount point %s\n",
+		  __func__, mpt);
+
+	pid = fork();
+
+	if (pid < 0) {
+		famfs_log(FAMFS_LOG_ERR, "%s: failed to fork (errno=%d)\n",
+			  __func__, errno);
+		fprintf(stderr, "%s: failed to fork\n", __func__);
+		return -1;
+	}
+
+	if (pid > 0) {
+		/* Parent process */
+		famfs_log(FAMFS_LOG_DEBUG, "%s: famfsd forked with pid=%d\n",
+			  __func__, pid);
+		if (verbose)
+			printf("%s: famfsd pid=%d\n", __func__, pid);
+		return 0;
+	}
+
+	/* Child process - exec famfsd */
+	len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+	if (len < 0) {
+		famfs_log(FAMFS_LOG_ERR, "%s: readlink /proc/self/exe failed\n",
+			  __func__);
+		fprintf(stderr, "%s: readlink /proc/self/exe failed\n",
+			__func__);
+		_exit(1);
+	}
+	exe_path[len] = '\0';
+
+	dir = dirname(exe_path);
+	snprintf(target_path, sizeof(target_path) - 1, "%s/%s", dir, "famfsd");
+
+	famfs_log(FAMFS_LOG_DEBUG, "%s: execing %s\n", __func__, target_path);
+
+	argv[argc++] = strdup("famfsd");
+
+	if (debug) {
+		argv[argc++] = "-f";  /* foreground */
+		argv[argc++] = "-v";  /* verbose */
+	}
+
+	argv[argc++] = strdup(mpt);
+	argv[argc++] = NULL;
+
+	assert(argc < NARGV);
+
+	execv(target_path, argv);
+
+	/* If execv returns, it failed */
+	famfs_log(FAMFS_LOG_ERR, "%s: execv failed for %s (errno=%d: %s)\n",
+		  __func__, target_path, errno, strerror(errno));
+	_exit(1);
+
+	return 0; /* Never reached */
 }
 
 static char *
@@ -871,6 +1020,29 @@ famfs_mount_fuse(
 	if (role == FAMFS_MASTER || role == FAMFS_CLIENT)
 		assert(sb->ts_log_offset == FAMFS_SUPERBLOCK_SIZE);
 
+	/*
+	 * Create superblock check file in shadow filesystem for famfsd daemon.
+	 * This allows detection of superblock overwrites by other hosts.
+	 * Do this for both MASTER and CLIENT roles, as both need to detect
+	 * if the filesystem has been invalidated.
+	 */
+	if (role == FAMFS_MASTER || role == FAMFS_CLIENT) {
+		famfs_log(FAMFS_LOG_DEBUG, "%s: creating superblock check file "
+			  "in shadow_root=%s\n", __func__, shadow_root);
+		rc = famfs_create_superblock_check(shadow_root, sb);
+		if (rc) {
+			fprintf(stderr, "%s: failed to create superblock check file "
+				"(rc=%d)\n", __func__, rc);
+			/* Non-fatal: warn but continue */
+			famfs_log(FAMFS_LOG_WARNING, "%s: continuing without "
+				  "superblock check file\n", __func__);
+			rc = 0; /* Reset rc, this is not fatal */
+		} else {
+			famfs_log(FAMFS_LOG_DEBUG, "%s: superblock check file "
+				  "created successfully\n", __func__);
+		}
+	}
+
 	/* if log_size is set, it's from the dummy_log_size argument - use that.
 	 * If not set, use the actual log size form the superblock */
 	if (log_size == 0)
@@ -924,6 +1096,35 @@ famfs_mount_fuse(
 			fprintf(stderr, "%s: failed to play the log\n",
 				__func__);
 			goto out;
+		}
+
+		/*
+		 * Start the famfsd daemon to monitor superblock consistency.
+		 * This daemon will detect if another host overwrites the
+		 * filesystem and initiate an unmount.
+		 * Only start for non-dummy mounts where we have a valid role.
+		 */
+		if (role == FAMFS_MASTER || role == FAMFS_CLIENT) {
+			famfs_log(FAMFS_LOG_DEBUG,
+				  "%s: starting famfsd daemon for %s\n",
+				  __func__, realmpt);
+			rc = famfs_start_famfsd(realmpt, debug, verbose);
+			if (rc) {
+				fprintf(stderr,
+					"%s: warning: failed to start famfsd "
+					"(rc=%d) - superblock monitoring disabled\n",
+					__func__, rc);
+				famfs_log(FAMFS_LOG_WARNING,
+					  "%s: failed to start famfsd - "
+					  "superblock monitoring disabled\n",
+					  __func__);
+				/* Non-fatal: continue without famfsd */
+				rc = 0;
+			} else {
+				famfs_log(FAMFS_LOG_NOTICE,
+					  "%s: famfsd started successfully\n",
+					  __func__);
+			}
 		}
 	}
 out:

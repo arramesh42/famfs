@@ -174,6 +174,7 @@ add_executable(famfs src/famfs_cli.c)
 add_executable(mkfs.famfs src/mkfs.famfs.c)
 add_executable(pcq src/pcq.c)
 add_executable(famfs_fused src/famfs_fused.c src/famfs_fused_rest.c)
+add_executable(famfsd src/famfsd.c)
 
 find_package(PkgConfig REQUIRED)
 if (NOT PKG_CONFIG_FOUND)
@@ -201,6 +202,7 @@ target_include_directories(libfamfs PRIVATE ${DAXCTL_INCLUDE_DIRS})
 target_link_libraries(famfs libfamfs famfstest uuid z yaml)
 target_link_libraries(mkfs.famfs libfamfs uuid z yaml)
 target_link_libraries(pcq libpcq libfamfs uuid z famfstest yaml)
+target_link_libraries(famfsd libfamfs uuid z yaml)
 
 set_target_properties(famfs_fused
 	PROPERTIES
@@ -259,6 +261,7 @@ install(TARGETS famfs DESTINATION /usr/local/bin)
 install(TARGETS mkfs.famfs DESTINATION /usr/local/bin)
 install(TARGETS pcq DESTINATION /usr/local/bin)
 install(TARGETS famfs_fused DESTINATION /usr/local/bin)
+install(TARGETS famfsd DESTINATION /usr/local/bin)
 
 #Install library and header files? Maybe later...
 
